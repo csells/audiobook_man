@@ -4,3 +4,8 @@ CLI that uses ffmpeg to tailer a folder of mp3s for use on a mp3 player for swim
 - Splits the mp3 into multiple mp3s of 20-minute parts each (pending)
 - Prepends each chunk with an audio indicator of the part, e.g. "Part 20" (pending)
 - Adds a silence to the end of each chunk (pending)
+
+# usage
+- install [ffmpeg](https://ffmpeg.org/)
+- run `bin/audiobook_man.dart` for usage instructions
+
