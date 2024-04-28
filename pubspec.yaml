@@ -9,8 +9,7 @@ environment:
 # Add regular dependencies here.
 dependencies:
   dartx: ^1.2.0
-  googleapis_client: ^0.0.12
-  # args: ^2.4.2
+  path: ^1.8.0
 
 dev_dependencies:
   lints: ^3.0.0

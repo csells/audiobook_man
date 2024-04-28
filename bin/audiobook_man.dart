@@ -1,70 +1,230 @@
 import 'dart:io';
-import 'package:dartx/dartx.dart';
+import 'package:dartx/dartx_io.dart';
+import 'package:path/path.dart' as path;
 
 void main(List<String> args) async {
-  if (args.isEmpty || args.length > 2) {
-    print('usage: audiobook_man '
-        '<mp3 file folder> '
-        '[output file name (default: output.mp3)]');
+  if (args.length != 2) {
+    print('usage: audiobook_man <input file folder> <output file folder>');
     return;
   }
 
-  final inputFolder = args[0];
-  final outputFile = args.length == 2 ? args[1] : 'output.mp3';
+  final inputFoldername = args[0];
+  final outputFoldername = args[1];
 
   // NOTE: part name wav files from:
   // https://console.cloud.google.com/vertex-ai/generative/speech/text-to-speech
 
-  // execute ffmpeg to concatenate the files in the list into a single mp3
-  final ffmpeg = Ffmpeg();
-  ffmpeg.concatFolder(inputFolder: inputFolder, outputFile: outputFile);
+  final ffmpeg = await Ffmpeg.init('audiobook_man');
+  try {
+    // concat mp3s into a single file
+    final basename = path.basenameWithoutExtension(inputFoldername);
+    final singleFilename = path.join(ffmpeg.workingDir.path, 'single.mp3');
+    await ffmpeg.concatFolderOfMp3Files(
+      inputFoldername: inputFoldername,
+      outputFilename: singleFilename,
+    );
+
+    // split mp3s into a set of files 20 minutes long each
+    final temp1Foldername = path.join(ffmpeg.workingDir.path, 'temp1');
+    final duration = 20 * 60; // 20 minutes
+    await ffmpeg.splitMp3File(
+      inputFilename: singleFilename,
+      duration: duration,
+      basename: 'temp',
+      outputFoldername: temp1Foldername,
+    );
+
+    // prepend a 'part x' prefix to each audio file
+    final temp1Files = await Directory(temp1Foldername).list().toList();
+    assert(temp1Files.all((o) => o is File));
+
+    final temp1Filenames = temp1Files.map((f) => f.path).sorted();
+    assert(temp1Filenames.all((fn) => path.extension(fn) == '.mp3'));
+
+    final temp2Filenames = List<String>.empty(growable: true);
+    final temp2Foldername = path.join(ffmpeg.workingDir.path, 'temp2');
+    var part = 1;
+    for (final temp1Filename in temp1Filenames.take(1)) {
+      // TODO
+      final partFilename = path.absolute(
+        path.join(
+          'part_name_audio',
+          'part_${part.toString().padLeft(2, '0')}.mp3',
+        ),
+      );
+
+      // we may not have a 'part xx' file recorded yet that's high enough
+      assert(await File(partFilename).exists());
+
+      final temp2Filename = path.join(
+        temp2Foldername,
+        path.basename(temp1Filename),
+      );
+
+      await ffmpeg.concatMp3Files(
+        inputFilenames: [partFilename, temp1Filename],
+        outputFilename: temp2Filename,
+        normalizeAudio: true,
+      );
+
+      temp2Filenames.add(temp2Filename);
+      ++part;
+    }
+
+    // add 2 seconds of silence to the end of each audio file
+    // TODO
+
+    // move the files into the output folder
+    await Directory(outputFoldername).create(recursive: true);
+    var out = 1;
+    for (final temp2Filename in temp2Filenames) {
+      final outputFilename = path.join(
+        outputFoldername,
+        '$basename-${out.toString().padLeft(2, '0')}.mp3',
+      );
+
+      ffmpeg.log('renaming $temp2Filename -> $outputFilename');
+      // await File(temp2Filename).rename(outputFilename);
+      ++out;
+    }
+  } finally {
+    // await ffmpeg.dispose();
+  }
 }
 
 class Ffmpeg {
-  final _exe = 'ffmpeg';
+  Directory? _workingDir;
 
-  void concatFolder({
-    required String inputFolder,
-    required String outputFile,
-  }) async {
-    // create a list of mp3 files from the folder specified by mp3Folder
-    final mp3Files =
-        Directory(inputFolder).listSync().where((f) => f.path.endsWith('.mp3'));
+  Ffmpeg._(this._workingDir);
 
-    // create a temp file to hold the file list using' the OS temp folder
-    final tempDir = await Directory.systemTemp.createTemp('audiobook_man');
-    final fileList = File('${tempDir.path}/filelist.txt');
-    final lines = mp3Files.map((n) =>
-        "file ${n.path.replaceAll("'", r"\'").replaceAll(" ", r"\ ")}\n");
-    await fileList.writeAsString(lines.sorted().join(''));
+  static Future<Ffmpeg> init(String appName) async {
+    // create a working folder to hold transient data
+    return Ffmpeg._(await Directory.systemTemp.createTemp(appName));
+  }
 
-    // ffmpeg -f concat -safe 0 -i mylist.txt -c copy output.mp3
-    final args = [
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      fileList.path,
-      '-c',
-      'copy',
-      outputFile,
-    ];
+  Directory get workingDir => _workingDir!;
 
-    try {
-      final results = await Process.run(_exe, args);
-
-      if (results.exitCode != 0) {
-        throw ProcessException(
-          _exe,
-          args,
-          results.stderr.toString(),
-          results.exitCode,
-        );
-      }
-    } finally {
-      // delete the temp folder
-      await tempDir.delete(recursive: true);
+  Future<void> dispose() async {
+    // delete the working folder
+    if (_workingDir != null) {
+      log('removing working directory: ${workingDir.path}');
+      await _workingDir!.delete(recursive: true);
+      _workingDir = null;
     }
   }
+
+  // concatenate the mp3 files in the folder into a single mp3
+  Future<void> concatFolderOfMp3Files({
+    required String inputFoldername,
+    required String outputFilename,
+  }) async {
+    log('concating folder of mp3 files: $inputFoldername -> $outputFilename\n');
+
+    // create a list of mp3 files from the input folder
+    final inputFiles = (await Directory(inputFoldername).list().toList())
+        .where((f) => f.path.endsWith('.mp3'))
+        .map((f) => f.path)
+        .sorted();
+
+    await concatMp3Files(
+      inputFilenames: inputFiles,
+      outputFilename: outputFilename,
+    );
+  }
+
+  // execute ffmpeg to concatenate a list of files together into a single mp3
+  Future<void> concatMp3Files({
+    required Iterable<String> inputFilenames,
+    required String outputFilename,
+    bool normalizeAudio = false,
+  }) async {
+    log('concating mp3 files: $inputFilenames -> $outputFilename\n');
+
+    // create a temp file to hold the file list
+    final fileList = File(path.join(workingDir.path, 'filelist.txt'));
+    final lines = inputFilenames.map(
+        (f) => "file ${f.replaceAll("'", r"\'").replaceAll(" ", r"\ ")}\n");
+    await fileList.writeAsString(lines.join(''));
+
+    // make sure the output file name's folder exists
+    Directory(path.dirname(outputFilename)).create(recursive: true);
+
+    if (normalizeAudio) {
+      // ffmpeg -f concat -safe 0 -i input.txt \
+      //  -af "loudnorm=I=-16:LRA=11:TP=-1.5" \
+      //  -c:a libmp3lame -b:a 64k \
+      //  output.mp3
+      await _execute([
+        '-f',
+        'concat',
+        '-safe',
+        '0',
+        '-i',
+        fileList.path,
+        '-af',
+        'loudnorm=I=-16:LRA=11:TP=-1.5',
+        '-c:a',
+        'libmp3lame',
+        '-b:a',
+        '64k',
+        outputFilename,
+      ]);
+    } else {
+      // ffmpeg -f concat -safe 0 -i mylist.txt -c copy output.mp3
+      await _execute([
+        '-f',
+        'concat',
+        '-safe',
+        '0',
+        '-i',
+        fileList.path,
+        '-c',
+        'copy',
+        outputFilename,
+      ]);
+    }
+  }
+
+  Future<void> splitMp3File({
+    required String inputFilename,
+    required int duration, // in seconds
+    required String basename,
+    required String outputFoldername,
+  }) async {
+    log('splitting mp3 file: $inputFilename -> $outputFoldername');
+
+    // ensure output folder exists
+    await Directory(outputFoldername).create(recursive: true);
+
+    // ffmpeg -i input.mp3 -f segment -segment_time <duration> -segment_start_number 1 -c copy f-%03d.mp3
+    await _execute([
+      '-i',
+      inputFilename,
+      '-f',
+      'segment',
+      '-segment_time',
+      duration.toString(),
+      '-segment_start_number',
+      '1',
+      '-c',
+      'copy',
+      path.join(outputFoldername, '$basename-%02d.mp3'),
+    ]);
+  }
+
+  Future<void> _execute(List<String> args) async {
+    final exe = 'ffmpeg';
+    final results = await Process.run(exe, args);
+
+    if (results.exitCode != 0) {
+      throw ProcessException(
+        exe,
+        args,
+        results.stderr.toString(),
+        results.exitCode,
+      );
+    }
+  }
+
+  void log(String s) => print(s);
 }
