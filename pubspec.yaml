@@ -8,6 +8,7 @@ environment:
 
 # Add regular dependencies here.
 dependencies:
+  all_lint_rules_community: ^0.0.40
   dartx: ^1.2.0
   path: ^1.8.0
 

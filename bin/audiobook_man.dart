@@ -4,6 +4,7 @@ import 'package:path/path.dart' as path;
 
 void main(List<String> args) async {
   if (args.length != 2) {
+    // ignore: avoid_print
     print('usage: audiobook_man <input file folder> <output file folder>');
     return;
   }
@@ -26,7 +27,7 @@ void main(List<String> args) async {
 
     // split mp3s into a set of files 20 minutes long each
     final temp1Foldername = path.join(ffmpeg.workingDir.path, 'temp1');
-    final duration = 20 * 60; // 20 minutes
+    const duration = 20 * 60; // 20 minutes
     await ffmpeg.splitMp3File(
       inputFilename: singleFilename,
       duration: duration,
@@ -53,7 +54,7 @@ void main(List<String> args) async {
       );
 
       // we may not have a 'part xx' file recorded yet that's high enough
-      assert(await File(partFilename).exists());
+      assert(File(partFilename).existsSync());
 
       final temp2Filename = path.join(
         temp2Foldername,
@@ -70,7 +71,7 @@ void main(List<String> args) async {
       ++part;
     }
 
-    // add 2 seconds of silence to the end of each audio file
+    // speed the files up by 1.5x
     // TODO
 
     // move the files into the output folder
@@ -92,14 +93,12 @@ void main(List<String> args) async {
 }
 
 class Ffmpeg {
+  Ffmpeg._(this._workingDir);
   Directory? _workingDir;
 
-  Ffmpeg._(this._workingDir);
-
-  static Future<Ffmpeg> init(String appName) async {
-    // create a working folder to hold transient data
-    return Ffmpeg._(await Directory.systemTemp.createTemp(appName));
-  }
+  // create a working folder to hold transient data
+  static Future<Ffmpeg> init(String appName) async =>
+      Ffmpeg._(await Directory.systemTemp.createTemp(appName));
 
   Directory get workingDir => _workingDir!;
 
@@ -136,10 +135,13 @@ class Ffmpeg {
     required String inputFilename2,
     required String outputFilename,
   }) async {
-    log('concating 2x mp3 files: $inputFilename1, $inputFilename2 -> $outputFilename\n');
+    log(
+      'concating 2x mp3 files: '
+      '$inputFilename1, $inputFilename2 -> $outputFilename\n',
+    );
 
     // make sure the output file name's folder exists
-    Directory(path.dirname(outputFilename)).create(recursive: true);
+    await Directory(path.dirname(outputFilename)).create(recursive: true);
 
     // ffmpeg -i input.mp3 -i second.mp3 -filter_complex \
     //  "[0:a]atrim=end=10,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=N/SR/TB[begin];[1:a]aformat=sample_rates=44100:channel_layouts=stereo[middle];[0:a]atrim=start=10,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=N/SR/TB[end];[begin][middle][end]concat=n=3:v=0:a=1[a]" \
@@ -172,7 +174,7 @@ class Ffmpeg {
     await fileList.writeAsString(lines.join(''));
 
     // make sure the output file name's folder exists
-    Directory(path.dirname(outputFilename)).create(recursive: true);
+    await Directory(path.dirname(outputFilename)).create(recursive: true);
 
     // ffmpeg -f concat -safe 0 -i mylist.txt -c copy output.mp3
     await _execute([
@@ -199,7 +201,8 @@ class Ffmpeg {
     // ensure output folder exists
     await Directory(outputFoldername).create(recursive: true);
 
-    // ffmpeg -i input.mp3 -f segment -segment_time <duration> -segment_start_number 1 -c copy f-%03d.mp3
+    // ffmpeg -i input.mp3 -f segment -segment_time <duration> \
+    //  -segment_start_number 1 -c copy f-%03d.mp3
     await _execute([
       '-i',
       inputFilename,
@@ -215,8 +218,38 @@ class Ffmpeg {
     ]);
   }
 
+  Future<void> changeMp3FileSpeed({
+    required String inputFilename,
+    required double multiplier,
+    required String outputFilename,
+  }) async {
+    log(
+      'changing mp3 file speed by $multiplier: '
+      '$inputFilename -> $outputFilename',
+    );
+
+    // ensure output folder exists
+    await Directory(path.dirname(outputFilename)).create(recursive: true);
+
+    // // ffmpeg -i input.mp3 -f segment -segment_time <duration> \
+    // //  -segment_start_number 1 -c copy f-%03d.mp3
+    // await _execute([
+    //   '-i',
+    //   inputFilename,
+    //   '-f',
+    //   'segment',
+    //   '-segment_time',
+    //   duration.toString(),
+    //   '-segment_start_number',
+    //   '1',
+    //   '-c',
+    //   'copy',
+    //   path.join(outputFoldername, '$basename-%02d.mp3'),
+    // ]);
+  }
+
   Future<void> _execute(List<String> args) async {
-    final exe = 'ffmpeg';
+    const exe = 'ffmpeg';
     final results = await Process.run(exe, args);
 
     if (results.exitCode != 0) {
@@ -229,5 +262,6 @@ class Ffmpeg {
     }
   }
 
+  // ignore: avoid_print
   void log(String s) => print(s);
 }
