@@ -44,8 +44,7 @@ void main(List<String> args) async {
     final temp2Filenames = List<String>.empty(growable: true);
     final temp2Foldername = path.join(ffmpeg.workingDir.path, 'temp2');
     var part = 1;
-    for (final temp1Filename in temp1Filenames.take(1)) {
-      // TODO
+    for (final temp1Filename in temp1Filenames) {
       final partFilename = path.absolute(
         path.join(
           'part_name_audio',
@@ -61,10 +60,10 @@ void main(List<String> args) async {
         path.basename(temp1Filename),
       );
 
-      await ffmpeg.concatMp3Files(
-        inputFilenames: [partFilename, temp1Filename],
+      await ffmpeg.concatAndNormalizeTwoMp3Files(
+        inputFilename1: partFilename,
+        inputFilename2: temp1Filename,
         outputFilename: temp2Filename,
-        normalizeAudio: true,
       );
 
       temp2Filenames.add(temp2Filename);
@@ -84,11 +83,11 @@ void main(List<String> args) async {
       );
 
       ffmpeg.log('renaming $temp2Filename -> $outputFilename');
-      // await File(temp2Filename).rename(outputFilename);
+      await File(temp2Filename).rename(outputFilename);
       ++out;
     }
   } finally {
-    // await ffmpeg.dispose();
+    await ffmpeg.dispose();
   }
 }
 
@@ -132,11 +131,37 @@ class Ffmpeg {
     );
   }
 
+  Future<void> concatAndNormalizeTwoMp3Files({
+    required String inputFilename1,
+    required String inputFilename2,
+    required String outputFilename,
+  }) async {
+    log('concating 2x mp3 files: $inputFilename1, $inputFilename2 -> $outputFilename\n');
+
+    // make sure the output file name's folder exists
+    Directory(path.dirname(outputFilename)).create(recursive: true);
+
+    // ffmpeg -i input.mp3 -i second.mp3 -filter_complex \
+    //  "[0:a]atrim=end=10,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=N/SR/TB[begin];[1:a]aformat=sample_rates=44100:channel_layouts=stereo[middle];[0:a]atrim=start=10,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=N/SR/TB[end];[begin][middle][end]concat=n=3:v=0:a=1[a]" \
+    //  -map "[a]"
+    //   output.mp3
+    await _execute([
+      '-i',
+      inputFilename1,
+      '-i',
+      inputFilename2,
+      '-filter_complex',
+      '[0:a]atrim=end=10,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=N/SR/TB[begin];[1:a]aformat=sample_rates=44100:channel_layouts=stereo[middle];[0:a]atrim=start=10,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=N/SR/TB[end];[begin][middle][end]concat=n=3:v=0:a=1[a]',
+      '-map',
+      '[a]',
+      outputFilename,
+    ]);
+  }
+
   // execute ffmpeg to concatenate a list of files together into a single mp3
   Future<void> concatMp3Files({
     required Iterable<String> inputFilenames,
     required String outputFilename,
-    bool normalizeAudio = false,
   }) async {
     log('concating mp3 files: $inputFilenames -> $outputFilename\n');
 
@@ -149,40 +174,18 @@ class Ffmpeg {
     // make sure the output file name's folder exists
     Directory(path.dirname(outputFilename)).create(recursive: true);
 
-    if (normalizeAudio) {
-      // ffmpeg -f concat -safe 0 -i input.txt \
-      //  -af "loudnorm=I=-16:LRA=11:TP=-1.5" \
-      //  -c:a libmp3lame -b:a 64k \
-      //  output.mp3
-      await _execute([
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        fileList.path,
-        '-af',
-        'loudnorm=I=-16:LRA=11:TP=-1.5',
-        '-c:a',
-        'libmp3lame',
-        '-b:a',
-        '64k',
-        outputFilename,
-      ]);
-    } else {
-      // ffmpeg -f concat -safe 0 -i mylist.txt -c copy output.mp3
-      await _execute([
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        fileList.path,
-        '-c',
-        'copy',
-        outputFilename,
-      ]);
-    }
+    // ffmpeg -f concat -safe 0 -i mylist.txt -c copy output.mp3
+    await _execute([
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      fileList.path,
+      '-c',
+      'copy',
+      outputFilename,
+    ]);
   }
 
   Future<void> splitMp3File({
